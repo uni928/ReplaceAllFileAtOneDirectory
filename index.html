@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>フォルダ内の文字列一括置換（バックアップ付き）</title>
+  <title>フォルダ内の文字列一括置換（バックアップ・フィルタ付き）</title>
   <style>
     body { font-family: sans-serif; padding: 1em; }
     label { display: block; margin-top: 1em; }
@@ -19,7 +19,7 @@
   </style>
 </head>
 <body>
-  <h2>フォルダ内の全ファイルを一括置換（ZIPバックアップ付き）</h2>
+  <h2>フォルダ内の全ファイルを一括置換（ZIPバックアップ・フィルタ付き）</h2>
   
   <label>
     検索文字列:
@@ -30,7 +30,7 @@
     <input type="text" id="replaceText" placeholder="置換後の文字列">
   </label>
   <label>
-    <input type="checkbox" id="backupZip" checked="checked"> 置換前にZIP化してバックアップ（デフォルトのダウンロード先に保存されます。恐らくダウンロードフォルダです）
+    <input type="checkbox" id="backupZip" checked="checked"> 置換前にZIP化してバックアップ（フォルダの中に生成されます）
   </label>
   
   <button id="selectFolderBtn">フォルダを選択して置換実行</button>
@@ -38,6 +38,29 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script>
+    // 除外する拡張子一覧
+    const excludedExtensions = [
+      '.meta', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.ico',
+      '.mp4', '.webm', '.mp3', '.wav', '.zip', '.tar', '.gz', '.exe',
+      '.dll', '.class', '.jar', '.so', '.bin', '.dat', '.ttf', '.woff', '.woff2'
+    ];
+
+    // 文字化けチェック関数
+    function isProbablyGarbled(text) {
+      const totalLength = text.length;
+      if (totalLength === 0) return false;
+
+      const nonPrintable = (text.match(/[\x00-\x08\x0E-\x1F\x7F]/g) || []).length;
+      const replacementChars = (text.match(/\uFFFD/g) || []).length;
+      const nullChars = (text.match(/\x00/g) || []).length;
+
+      return (
+        nonPrintable / totalLength > 0.1 ||
+        replacementChars / totalLength > 0.05 ||
+        nullChars > 0
+      );
+    }
+
     document.getElementById('selectFolderBtn').addEventListener('click', async () => {
       const searchText = document.getElementById('searchText').value;
       const replaceText = document.getElementById('replaceText').value;
@@ -75,15 +98,16 @@
 
           const blob = await zip.generateAsync({ type: "blob" });
           const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-          const backupFileName = `backup-${timestamp}.zip`;
-          
-          const link = document.createElement("a");
-          link.href = URL.createObjectURL(blob);
-          link.download = backupFileName;
-          link.click();
-          URL.revokeObjectURL(link.href);
+          const folderName = dirHandle.name;
+          const backupFileName = `backup-${folderName}-${timestamp}.zip`;
 
-          output.textContent += `✔ バックアップ ${backupFileName} を作成しました。\n\n`;
+          const parentHandle = await dirHandle.requestPermission({ mode: 'readwrite' }) && dirHandle;
+          const backupHandle = await parentHandle.getFileHandle(backupFileName, { create: true });
+          const writable = await backupHandle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+
+          output.textContent += `✔ バックアップ ${backupFileName} を同階層に保存しました。\n\n`;
         }
 
         output.textContent += "🔍 置換処理を開始...\n";
@@ -91,9 +115,20 @@
         async function replaceInFiles(handle) {
           for await (const entry of handle.values()) {
             if (entry.kind === 'file') {
+              const lowerName = entry.name.toLowerCase();
+              if (excludedExtensions.some(ext => lowerName.endsWith(ext))) {
+                output.textContent += `⚠ スキップ: ${entry.name}（除外拡張子）\n`;
+                continue;
+              }
+
               const fileHandle = entry;
               const file = await fileHandle.getFile();
               const text = await file.text();
+
+              if (isProbablyGarbled(text)) {
+                output.textContent += `⚠ スキップ: ${entry.name}（文字化け検出）\n`;
+                continue;
+              }
 
               if (text.includes(searchText)) {
                 const updatedText = text.split(searchText).join(replaceText);
@@ -101,7 +136,7 @@
                 await writable.write(updatedText);
                 await writable.close();
                 modifiedFiles++;
-                output.textContent += `✔ ${entry.name} を置換しました\n`;
+                output.textContent += `✔ 置換: ${entry.name}\n`;
               }
             } else if (entry.kind === 'directory') {
               await replaceInFiles(entry);
