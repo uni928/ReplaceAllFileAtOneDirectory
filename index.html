@@ -38,6 +38,23 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script>
+
+// 禁止フォルダ名リスト
+const forbiddenPaths = [
+  '/', 'C:/', 'C:\\', '/bin', '/etc', '/usr', '/var', '/System',
+  '/Library', '/Applications', '/root', '/home',
+  'C:/Windows', 'C:\\Windows', 'C:/Program Files', 'C:\\Program Files',
+  'C:/Program Files (x86)', 'C:\\Program Files (x86)',
+  'C:/Users', 'C:\\Users', 'C:/System32', 'C:\\System32', 'C:/AppData', 'C:\\AppData'
+];
+
+// フォルダが禁止リストに該当するか確認
+function isForbiddenFolder(folderName) {
+  return forbiddenPaths.some(forbidden =>
+    folderName.toLowerCase() === forbidden.toLowerCase()
+  );
+}
+
     // 除外する拡張子一覧
     const excludedExtensions = [
       '.meta', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.ico',
@@ -75,6 +92,16 @@
 
       try {
         const dirHandle = await window.showDirectoryPicker();
+
+    const folderName = dirHandle.name;
+
+    // 禁止フォルダチェック
+    if (isForbiddenFolder(folderName) || isForbiddenFolder(dirHandle.name)) {
+      alert(`⚠ このフォルダは危険なため操作できません: ${folderName}`);
+      output.textContent = `❌ 禁止フォルダ: ${folderName}`;
+      return;
+    }
+
         let modifiedFiles = 0;
 
         if (backupZip) {
