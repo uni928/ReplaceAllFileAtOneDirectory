@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>フォルダ内の文字列一括置換（バックアップ・フィルタ付き）</title>
+  <title>フォルダ内の文字列一括置換（ZIPバックアップ・簡易安全版）</title>
   <style>
     body { font-family: sans-serif; padding: 1em; }
     label { display: block; margin-top: 1em; }
@@ -19,7 +19,7 @@
   </style>
 </head>
 <body>
-  <h2>フォルダ内の全ファイルを一括置換（ZIPバックアップ・フィルタ付き）</h2>
+  <h2>フォルダ内の全ファイルを一括置換（ZIPバックアップ・フォルダ名入力なし）</h2>
   
   <label>
     検索文字列:
@@ -38,31 +38,18 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script>
-
-// 禁止フォルダ名リスト(十全ではありません。過信しないで下さい。あくまでも保険です)
-const forbiddenPaths = [
-  '/', 'C:/', 'C:\\', '/bin', '/etc', '/usr', '/var', '/System',
-  '/Library', '/Applications', '/root', '/home',
-  'C:/Windows', 'C:\\Windows', 'C:/Program Files', 'C:\\Program Files',
-  'C:/Program Files (x86)', 'C:\\Program Files (x86)',
-  'C:/Users', 'C:\\Users', 'C:/System32', 'C:\\System32', 'C:/AppData', 'C:\\AppData'
-];
-
-// フォルダが禁止リストに該当するか確認
-function isForbiddenFolder(folderName) {
-  return forbiddenPaths.some(forbidden =>
-    folderName.toLowerCase() === forbidden.toLowerCase()
-  );
-}
-
-    // 除外する拡張子一覧
     const excludedExtensions = [
       '.meta', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.ico',
       '.mp4', '.webm', '.mp3', '.wav', '.zip', '.tar', '.gz', '.exe',
       '.dll', '.class', '.jar', '.so', '.bin', '.dat', '.ttf', '.woff', '.woff2'
     ];
 
-    // 文字化けチェック関数
+    const forbiddenKeywords = [
+      '/', '\\', 'windows', 'system32', 'program files', 'programdata',
+      'users', 'appdata', 'system', 'library', 'applications',
+      'bin', 'etc', 'usr', 'var', 'root', 'dev'
+    ];
+
     function isProbablyGarbled(text) {
       const totalLength = text.length;
       if (totalLength === 0) return false;
@@ -78,6 +65,22 @@ function isForbiddenFolder(folderName) {
       );
     }
 
+    function isForbiddenFolderPath(folderName) {
+      const lowerPath = folderName.toLowerCase();
+      return forbiddenKeywords.some(keyword => lowerPath.includes(keyword));
+    }
+
+    async function countFilesRecursive(handle, count = { files: 0 }) {
+      for await (const entry of handle.values()) {
+        if (entry.kind === 'file') {
+          count.files++;
+        } else if (entry.kind === 'directory') {
+          await countFilesRecursive(entry, count);
+        }
+      }
+      return count.files;
+    }
+
     document.getElementById('selectFolderBtn').addEventListener('click', async () => {
       const searchText = document.getElementById('searchText').value;
       const replaceText = document.getElementById('replaceText').value;
@@ -91,21 +94,30 @@ function isForbiddenFolder(folderName) {
       }
 
       try {
+        // 処理対象フォルダ選択
+        output.textContent += "📂 処理対象フォルダを選択してください...\n";
         const dirHandle = await window.showDirectoryPicker();
+        const folderName = dirHandle.name;
 
-    const folderName = dirHandle.name;
+        if (isForbiddenFolderPath(folderName)) {
+          alert(`🚫 このフォルダは危険なため操作できません: ${folderName}`);
+          output.textContent = `❌ 禁止フォルダ: ${folderName}`;
+          return;
+        }
 
-    // 禁止フォルダチェック
-    if (isForbiddenFolder(folderName) || isForbiddenFolder(dirHandle.name)) {
-      alert(`⚠ このフォルダは危険なため操作できません: ${folderName}`);
-      output.textContent = `❌ 禁止フォルダ: ${folderName}`;
-      return;
-    }
+        // ファイル数チェック
+        const totalFiles = await countFilesRecursive(dirHandle);
+        if (totalFiles > 1000) {
+          const proceed = confirm(`⚠ ${totalFiles} 件のファイルがあります。続行しますか？`);
+          if (!proceed) {
+            output.textContent += "❌ ユーザーが処理を中止しました。\n";
+            return;
+          }
+        }
 
-        let modifiedFiles = 0;
-
+        // バックアップ作成
         if (backupZip) {
-          output.textContent += "🔄 バックアップを作成中...\n";
+          output.textContent += "🔄 バックアップ作成中...\n";
           const zip = new JSZip();
 
           async function addToZip(handle, path = "") {
@@ -122,22 +134,23 @@ function isForbiddenFolder(folderName) {
           }
 
           await addToZip(dirHandle);
-
           const blob = await zip.generateAsync({ type: "blob" });
           const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-          const folderName = dirHandle.name;
           const backupFileName = `backup-${folderName}-${timestamp}.zip`;
 
-          const parentHandle = await dirHandle.requestPermission({ mode: 'readwrite' }) && dirHandle;
+          // ZIPを同じ階層に保存
+          const parentHandle = dirHandle; // 同階層扱い（ブラウザの仕様上ここしか許可されない）
           const backupHandle = await parentHandle.getFileHandle(backupFileName, { create: true });
           const writable = await backupHandle.createWritable();
           await writable.write(blob);
           await writable.close();
 
-          output.textContent += `✔ バックアップ ${backupFileName} を同階層に保存しました。\n\n`;
+          output.textContent += `✔ バックアップを ${backupFileName} として保存しました。\n`;
         }
 
+        // 置換処理
         output.textContent += "🔍 置換処理を開始...\n";
+        let modifiedFiles = 0;
 
         async function replaceInFiles(handle) {
           for await (const entry of handle.values()) {
@@ -176,7 +189,7 @@ function isForbiddenFolder(folderName) {
         if (modifiedFiles > 0) {
           output.textContent += `\n✅ ${modifiedFiles} 件のファイルを置換しました。`;
         } else {
-          output.textContent += `\n⚠ 置換対象の文字列は見つかりませんでした。`;
+          output.textContent += `\n⚠ 置換対象が見つかりませんでした。`;
         }
 
       } catch (err) {
