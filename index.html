@@ -30,6 +30,10 @@
     <input type="text" id="replaceText" placeholder="置換後の文字列">
   </label>
   <label>
+    指定しようとしているフォルダー名:
+    <input type="text" id="folderNameText" placeholder="対象フォルダー名">
+  </label>
+  <label>
     <input type="checkbox" id="backupZip" checked="checked"> 置換前にZIP化してバックアップ（フォルダの中に生成されます）
   </label>
   
@@ -84,6 +88,7 @@
     document.getElementById('selectFolderBtn').addEventListener('click', async () => {
       const searchText = document.getElementById('searchText').value;
       const replaceText = document.getElementById('replaceText').value;
+      const checkFolderName = document.getElementById('folderNameText').value;
       const backupZip = document.getElementById('backupZip').checked;
       const output = document.getElementById('output');
       output.textContent = '';
@@ -103,6 +108,11 @@
           alert(`🚫 このフォルダは危険なため操作できません: ${folderName}`);
           output.textContent = `❌ 禁止フォルダ: ${folderName}`;
           return;
+        }
+
+        if(folderName != checkFolderName) {
+            alert(`🚫 フォルダ名が誤っているため、安全性を考慮して処理を中断します: ${folderName}`);
+            return;
         }
 
         // ファイル数チェック
