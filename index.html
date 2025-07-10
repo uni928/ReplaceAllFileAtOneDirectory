@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>フォルダ内の文字列一括置換（バックアップ付き）</title>
+  <style>
+    body { font-family: sans-serif; padding: 1em; }
+    label { display: block; margin-top: 1em; }
+    #output {
+      white-space: pre-wrap;
+      background: #f9f9f9;
+      border: 1px solid #ccc;
+      padding: 1em;
+      margin-top: 1em;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    button { margin-top: 1em; }
+  </style>
+</head>
+<body>
+  <h2>フォルダ内の全ファイルを一括置換（ZIPバックアップ付き）</h2>
+  
+  <label>
+    検索文字列:
+    <input type="text" id="searchText" placeholder="置換したい文字列">
+  </label>
+  <label>
+    置換後の文字列:
+    <input type="text" id="replaceText" placeholder="置換後の文字列">
+  </label>
+  <label>
+    <input type="checkbox" id="backupZip"> 置換前にZIP化してバックアップ（デフォルトのダウンロード先に保存されます。恐らくダウンロードフォルダです）
+  </label>
+  
+  <button id="selectFolderBtn">フォルダを選択して置換実行</button>
+  <div id="output"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script>
+    document.getElementById('selectFolderBtn').addEventListener('click', async () => {
+      const searchText = document.getElementById('searchText').value;
+      const replaceText = document.getElementById('replaceText').value;
+      const backupZip = document.getElementById('backupZip').checked;
+      const output = document.getElementById('output');
+      output.textContent = '';
+
+      if (!searchText) {
+        alert("検索文字列を入力してください。");
+        return;
+      }
+
+      try {
+        const dirHandle = await window.showDirectoryPicker();
+        let modifiedFiles = 0;
+
+        if (backupZip) {
+          output.textContent += "🔄 バックアップを作成中...\n";
+          const zip = new JSZip();
+
+          async function addToZip(handle, path = "") {
+            for await (const entry of handle.values()) {
+              const entryPath = path + entry.name;
+              if (entry.kind === 'file') {
+                const file = await entry.getFile();
+                const content = await file.arrayBuffer();
+                zip.file(entryPath, content);
+              } else if (entry.kind === 'directory') {
+                await addToZip(entry, entryPath + "/");
+              }
+            }
+          }
+
+          await addToZip(dirHandle);
+
+          const blob = await zip.generateAsync({ type: "blob" });
+          const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+          const backupFileName = `backup-${timestamp}.zip`;
+          
+          const link = document.createElement("a");
+          link.href = URL.createObjectURL(blob);
+          link.download = backupFileName;
+          link.click();
+          URL.revokeObjectURL(link.href);
+
+          output.textContent += `✔ バックアップ ${backupFileName} を作成しました。\n\n`;
+        }
+
+        output.textContent += "🔍 置換処理を開始...\n";
+
+        async function replaceInFiles(handle) {
+          for await (const entry of handle.values()) {
+            if (entry.kind === 'file') {
+              const fileHandle = entry;
+              const file = await fileHandle.getFile();
+              const text = await file.text();
+
+              if (text.includes(searchText)) {
+                const updatedText = text.split(searchText).join(replaceText);
+                const writable = await fileHandle.createWritable();
+                await writable.write(updatedText);
+                await writable.close();
+                modifiedFiles++;
+                output.textContent += `✔ ${entry.name} を置換しました\n`;
+              }
+            } else if (entry.kind === 'directory') {
+              await replaceInFiles(entry);
+            }
+          }
+        }
+
+        await replaceInFiles(dirHandle);
+
+        if (modifiedFiles > 0) {
+          output.textContent += `\n✅ ${modifiedFiles} 件のファイルを置換しました。`;
+        } else {
+          output.textContent += `\n⚠ 置換対象の文字列は見つかりませんでした。`;
+        }
+
+      } catch (err) {
+        console.error(err);
+        output.textContent = `❌ エラー: ${err.message}`;
+      }
+    });
+  </script>
+</body>
+</html>
