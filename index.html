@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>フォルダ内の文字列一括置換</title>
+  <style>
+    body { font-family: sans-serif; padding: 1em; }
+    label { display: block; margin-top: 1em; }
+    #output {
+      white-space: pre-wrap;
+      background: #f9f9f9;
+      border: 1px solid #ccc;
+      padding: 1em;
+      margin-top: 1em;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    button { margin-top: 1em; }
+  </style>
+</head>
+<body>
+  <h2>フォルダ内の全ファイルを一括置換（指定したフォルダの中に 「フォルダ名_replaced」 フォルダが生成されます）</h2>
+  
+  <label>
+    検索文字列:
+    <input type="text" id="searchText" placeholder="置換したい文字列">
+  </label>
+  <label>
+    置換後の文字列:
+    <input type="text" id="replaceText" placeholder="置換後の文字列">
+  </label>
+  
+  <button id="selectFolderBtn">フォルダを選択して置換実行</button>
+  <div id="output"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script>
+    const excludedExtensions = [
+      '.meta', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.ico',
+      '.mp4', '.webm', '.mp3', '.wav', '.zip', '.tar', '.gz', '.exe',
+      '.dll', '.class', '.jar', '.so', '.bin', '.dat', '.ttf', '.woff', '.woff2'
+    ];
+
+    const forbiddenKeywords = [
+      '/', '\\', 'windows', 'system32', 'program files', 'programdata',
+      'users', 'appdata', 'system', 'library', 'applications',
+      'bin', 'etc', 'usr', 'var', 'root', 'dev'
+    ];
+
+    function isProbablyGarbled(text) {
+      const totalLength = text.length;
+      if (totalLength === 0) return false;
+
+      const nonPrintable = (text.match(/[\x00-\x08\x0E-\x1F\x7F]/g) || []).length;
+      const replacementChars = (text.match(/\uFFFD/g) || []).length;
+      const nullChars = (text.match(/\x00/g) || []).length;
+
+      return (
+        nonPrintable / totalLength > 0.1 ||
+        replacementChars / totalLength > 0.05 ||
+        nullChars > 0
+      );
+    }
+
+    function isForbiddenFolderPath(folderName) {
+      const lowerPath = folderName.toLowerCase();
+      return forbiddenKeywords.some(keyword => lowerPath.includes(keyword));
+    }
+
+    async function copyDirectory(srcHandle, destHandle) {
+      for await (const entry of srcHandle.values()) {
+        if (entry.kind === 'file') {
+          const file = await entry.getFile();
+          const destFileHandle = await destHandle.getFileHandle(entry.name, { create: true });
+          const writable = await destFileHandle.createWritable();
+          await writable.write(await file.arrayBuffer());
+          await writable.close();
+        } else if (entry.kind === 'directory') {
+          const newDestDir = await destHandle.getDirectoryHandle(entry.name, { create: true });
+          if(!newDestDir.name.endsWith("_replaced")) {
+            await copyDirectory(entry, newDestDir);
+          }
+          else
+          {
+            try {
+              await destHandle.removeEntry(entry.name, { recursive: true });
+            } catch (err) {
+            }
+          }
+        }
+      }
+    }
+
+    async function replaceInFiles(handle, searchText, replaceText, output) {
+      let modifiedFiles = 0;
+      for await (const entry of handle.values()) {
+        if (entry.kind === 'file') {
+          const lowerName = entry.name.toLowerCase();
+          if (excludedExtensions.some(ext => lowerName.endsWith(ext))) {
+            output.textContent += `⚠ スキップ: ${entry.name}（除外拡張子）\n`;
+            continue;
+          }
+
+          const fileHandle = entry;
+          const file = await fileHandle.getFile();
+          const text = await file.text();
+
+          if (isProbablyGarbled(text)) {
+            output.textContent += `⚠ スキップ: ${entry.name}（文字化け検出）\n`;
+            continue;
+          }
+
+          if (text.includes(searchText)) {
+            const updatedText = text.split(searchText).join(replaceText);
+            const writable = await fileHandle.createWritable();
+            await writable.write(updatedText);
+            await writable.close();
+            modifiedFiles++;
+            output.textContent += `✔ 置換: ${entry.name}\n`;
+          }
+        } else if (entry.kind === 'directory') {
+          modifiedFiles += await replaceInFiles(entry, searchText, replaceText, output);
+        }
+      }
+      return modifiedFiles;
+    }
+
+    document.getElementById('selectFolderBtn').addEventListener('click', async () => {
+      const searchText = document.getElementById('searchText').value;
+      const replaceText = document.getElementById('replaceText').value;
+      const output = document.getElementById('output');
+      output.textContent = '';
+
+      if (!searchText) {
+        alert("検索文字列を入力してください。");
+        return;
+      }
+
+      try {
+        const dirHandle = await window.showDirectoryPicker();
+        const folderName = dirHandle.name;
+        const replacedName = folderName.endsWith('_replaced') ? folderName : `${folderName}_replaced`;
+
+        if (isForbiddenFolderPath(folderName)) {
+          alert(`🚫 このフォルダは危険なため操作できません: ${folderName}`);
+          output.textContent = `❌ 禁止フォルダ: ${folderName}`;
+          return;
+        }
+
+        const parentHandle = dirHandle;
+        let targetHandle;
+
+        try {
+          targetHandle = await parentHandle.getDirectoryHandle(replacedName);
+          output.textContent += `⚠ 既にコピー先フォルダ ${replacedName} が存在します。コピーせずそのまま置換します。\n`;
+        } catch {
+          output.textContent += `📁 コピー先フォルダを作成: ${replacedName}\n`;
+          targetHandle = await parentHandle.getDirectoryHandle(replacedName, { create: true });
+          await copyDirectory(dirHandle, targetHandle);
+          output.textContent += "✔ フォルダコピー完了\n";
+        }
+
+        output.textContent += "🔍 コピー先で置換処理を開始...\n";
+        const modifiedFiles = await replaceInFiles(targetHandle, searchText, replaceText, output);
+
+        if (modifiedFiles > 0) {
+          output.textContent += `\n✅ ${modifiedFiles} 件のファイルを置換しました。`;
+        } else {
+          output.textContent += `\n⚠ 置換対象が見つかりませんでした。`;
+        }
+
+      } catch (err) {
+        console.error(err);
+        output.textContent = `❌ エラー: ${err.message}`;
+      }
+    });
+
+    async function addToZip(handle, zip, path = "") {
+      for await (const entry of handle.values()) {
+        const entryPath = path + entry.name;
+        if (entry.kind === 'file') {
+          const file = await entry.getFile();
+          const content = await file.arrayBuffer();
+          zip.file(entryPath, content);
+        } else if (entry.kind === 'directory') {
+          await addToZip(entry, zip, entryPath + "/");
+        }
+      }
+    }
+  </script>
+</body>
+</html>
