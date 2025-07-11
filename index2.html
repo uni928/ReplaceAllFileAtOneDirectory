@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Batch Replace Strings in Folder</title>
+  <style>
+    body { font-family: sans-serif; padding: 1em; }
+    label { display: block; margin-top: 1em; }
+    #output {
+      white-space: pre-wrap;
+      background: #f9f9f9;
+      border: 1px solid #ccc;
+      padding: 1em;
+      margin-top: 1em;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    button { margin-top: 1em; }
+  </style>
+</head>
+<body>
+  <h2>Batch Replace All Files in a Folder (A folder named "FolderName_replaced" will be created inside the selected folder)</h2>
+  
+  <label>
+    Search String:
+    <input type="text" id="searchText" placeholder="Enter the text to replace">
+  </label>
+  <label>
+    Replacement String:
+    <input type="text" id="replaceText" placeholder="Enter replacement text">
+  </label>
+  <label>
+    <input type="checkbox" id="backupZip" checked="checked"> Create ZIP Backup Before Processing
+  </label>
+  
+  <button id="selectFolderBtn">Select Folder and Start Replace</button>
+  <div id="output"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script>
+    const excludedExtensions = [
+      '.meta', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.ico',
+      '.mp4', '.webm', '.mp3', '.wav', '.zip', '.tar', '.gz', '.exe',
+      '.dll', '.class', '.jar', '.so', '.bin', '.dat', '.ttf', '.woff', '.woff2'
+    ];
+
+    const forbiddenKeywords = [
+      '/', '\\', 'windows', 'system32', 'program files', 'programdata',
+      'users', 'appdata', 'system', 'library', 'applications',
+      'bin', 'etc', 'usr', 'var', 'root', 'dev'
+    ];
+
+    function isProbablyGarbled(text) {
+      const totalLength = text.length;
+      if (totalLength === 0) return false;
+
+      const nonPrintable = (text.match(/[\x00-\x08\x0E-\x1F\x7F]/g) || []).length;
+      const replacementChars = (text.match(/\uFFFD/g) || []).length;
+      const nullChars = (text.match(/\x00/g) || []).length;
+
+      return (
+        nonPrintable / totalLength > 0.1 ||
+        replacementChars / totalLength > 0.05 ||
+        nullChars > 0
+      );
+    }
+
+    function isForbiddenFolderPath(folderName) {
+      const lowerPath = folderName.toLowerCase();
+      return forbiddenKeywords.some(keyword => lowerPath.includes(keyword));
+    }
+
+    async function copyDirectory(srcHandle, destHandle) {
+      for await (const entry of srcHandle.values()) {
+        if (entry.kind === 'file') {
+          const file = await entry.getFile();
+          const destFileHandle = await destHandle.getFileHandle(entry.name, { create: true });
+          const writable = await destFileHandle.createWritable();
+          await writable.write(await file.arrayBuffer());
+          await writable.close();
+        } else if (entry.kind === 'directory') {
+          const newDestDir = await destHandle.getDirectoryHandle(entry.name, { create: true });
+          if (!newDestDir.name.endsWith("_replaced")) {
+            await copyDirectory(entry, newDestDir);
+          } else {
+            try {
+              await destHandle.removeEntry(entry.name, { recursive: true });
+            } catch (err) {
+              console.error(`Failed to delete directory: ${entry.name}`, err);
+            }
+          }
+        }
+      }
+    }
+
+    async function replaceInFiles(handle, searchText, replaceText, output) {
+      let modifiedFiles = 0;
+      for await (const entry of handle.values()) {
+        if (entry.kind === 'file') {
+          const lowerName = entry.name.toLowerCase();
+          if (excludedExtensions.some(ext => lowerName.endsWith(ext))) {
+            output.textContent += `⚠ Skipped: ${entry.name} (excluded extension)\n`;
+            continue;
+          }
+
+          const fileHandle = entry;
+          const file = await fileHandle.getFile();
+          const text = await file.text();
+
+          if (isProbablyGarbled(text)) {
+            output.textContent += `⚠ Skipped: ${entry.name} (garbled text detected)\n`;
+            continue;
+          }
+
+          if (text.includes(searchText)) {
+            const updatedText = text.split(searchText).join(replaceText);
+            const writable = await fileHandle.createWritable();
+            await writable.write(updatedText);
+            await writable.close();
+            modifiedFiles++;
+            output.textContent += `✔ Replaced: ${entry.name}\n`;
+          }
+        } else if (entry.kind === 'directory') {
+          modifiedFiles += await replaceInFiles(entry, searchText, replaceText, output);
+        }
+      }
+      return modifiedFiles;
+    }
+
+    document.getElementById('selectFolderBtn').addEventListener('click', async () => {
+      const searchText = document.getElementById('searchText').value;
+      const replaceText = document.getElementById('replaceText').value;
+      const backupZip = document.getElementById('backupZip').checked;
+      const output = document.getElementById('output');
+      output.textContent = '';
+
+      if (!searchText) {
+        alert("Please enter a search string.");
+        return;
+      }
+
+      try {
+        const dirHandle = await window.showDirectoryPicker();
+        const folderName = dirHandle.name;
+        const replacedName = folderName.endsWith('_replaced') ? folderName : `${folderName}_replaced`;
+
+        if (isForbiddenFolderPath(folderName)) {
+          alert(`🚫 Cannot process this folder for safety reasons: ${folderName}`);
+          output.textContent = `❌ Forbidden folder: ${folderName}`;
+          return;
+        }
+
+        const parentHandle = dirHandle;
+        let targetHandle;
+
+        try {
+          targetHandle = await parentHandle.getDirectoryHandle(replacedName);
+          output.textContent += `⚠ The folder ${replacedName} already exists. Skipping copy and performing replacement directly.\n`;
+        } catch {
+          output.textContent += `📁 Creating replacement folder: ${replacedName}\n`;
+          targetHandle = await parentHandle.getDirectoryHandle(replacedName, { create: true });
+          await copyDirectory(dirHandle, targetHandle);
+          output.textContent += "✔ Folder copy completed\n";
+        }
+
+        if (backupZip) {
+          output.textContent += "🔄 Creating ZIP backup...\n";
+          const zip = new JSZip();
+          await addToZip(targetHandle, zip);
+          const blob = await zip.generateAsync({ type: "blob" });
+          const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+          const backupFileName = `backup-${replacedName}-${timestamp}.zip`;
+          const backupHandle = await parentHandle.getFileHandle(backupFileName, { create: true });
+          const writable = await backupHandle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          output.textContent += `✔ Backup saved as ${backupFileName}\n`;
+        }
+
+        output.textContent += "🔍 Starting replacement in the copied folder...\n";
+        const modifiedFiles = await replaceInFiles(targetHandle, searchText, replaceText, output);
+
+        if (modifiedFiles > 0) {
+          output.textContent += `\n✅ Replaced text in ${modifiedFiles} files.`;
+        } else {
+          output.textContent += `\n⚠ No matching text found to replace.`;
+        }
+
+      } catch (err) {
+        console.error(err);
+        output.textContent = `❌ Error: ${err.message}`;
+      }
+    });
+
+    async function addToZip(handle, zip, path = "") {
+      for await (const entry of handle.values()) {
+        const entryPath = path + entry.name;
+        if (entry.kind === 'file') {
+          const file = await entry.getFile();
+          const content = await file.arrayBuffer();
+          zip.file(entryPath, content);
+        } else if (entry.kind === 'directory') {
+          await addToZip(entry, zip, entryPath + "/");
+        }
+      }
+    }
+  </script>
+</body>
+</html>
