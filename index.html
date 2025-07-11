@@ -29,6 +29,9 @@
     置換後の文字列:
     <input type="text" id="replaceText" placeholder="置換後の文字列">
   </label>
+  <label>
+    <input type="checkbox" id="backupZip" checked="checked"> 処理前にZIPバックアップ
+  </label>
   
   <button id="selectFolderBtn">フォルダを選択して置換実行</button>
   <div id="output"></div>
@@ -128,6 +131,7 @@
     document.getElementById('selectFolderBtn').addEventListener('click', async () => {
       const searchText = document.getElementById('searchText').value;
       const replaceText = document.getElementById('replaceText').value;
+      const backupZip = document.getElementById('backupZip').checked;
       const output = document.getElementById('output');
       output.textContent = '';
 
@@ -158,6 +162,21 @@
           targetHandle = await parentHandle.getDirectoryHandle(replacedName, { create: true });
           await copyDirectory(dirHandle, targetHandle);
           output.textContent += "✔ フォルダコピー完了\n";
+        }
+
+        // ZIPバックアップ（オプション）
+        if (backupZip) {
+          output.textContent += "🔄 ZIPバックアップ作成中...\n";
+          const zip = new JSZip();
+          await addToZip(targetHandle, zip);
+          const blob = await zip.generateAsync({ type: "blob" });
+          const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+          const backupFileName = `backup-${replacedName}-${timestamp}.zip`;
+          const backupHandle = await parentHandle.getFileHandle(backupFileName, { create: true });
+          const writable = await backupHandle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          output.textContent += `✔ バックアップを ${backupFileName} として保存しました。\n`;
         }
 
         output.textContent += "🔍 コピー先で置換処理を開始...\n";
