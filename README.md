@@ -7,3 +7,5 @@
 〇〇 というフォルダを置換した場合、〇〇 フォルダの中に 〇〇_replaced フォルダが生成されます。
 
 元からあるファイルを書き換える訳ではありませんが、差し替える際にかなり危険なアプリです。
+
+[自分用(かなり危険です)(私以外は使わない方が良いです)](https://uni928.github.io/ReplaceAllFileAtOneDirectory/index_denger.html)
